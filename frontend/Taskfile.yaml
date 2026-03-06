@@ -1,0 +1,25 @@
+version: "3"
+
+tasks:
+  image:
+    cmds:
+      - docker build -t {{.REGISTRY}}/vge.client:latest .
+  publish:
+    cmds:
+      - docker push {{.REGISTRY}}/vge.client:latest
+  deploy:
+    cmds:
+      - docker network create vge || true
+      - docker compose up -d
+  ci:
+    cmds:
+      - npm ci
+  build:
+    cmds:
+      - node_modules/.bin/vite build --base={{.BASE | default "/"}}
+  format:
+    cmds:
+      - npm run format
+  lint:
+    cmds:
+      - npm run lint

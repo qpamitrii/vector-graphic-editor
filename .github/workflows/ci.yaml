@@ -1,0 +1,38 @@
+name: ci
+on:
+  pull_request:
+    branches:
+      - main
+jobs:
+  format-and-lint:
+    permissions:
+      contents: write
+      pull-requests: write
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/fami-2026/vge.dev:latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.ref }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Add Safe Directory
+        run: git config --global --add safe.directory /__w/vector-graphic-editor/vector-graphic-editor
+
+      - name: Install Dependencies
+        run: task client:ci
+
+      - name: Lint
+        run: task client:lint
+
+      - name: Format
+        run: |
+          task server:format
+          task client:format
+
+      - name: Commit
+        uses: EndBug/add-and-commit@v9
+        with:
+          message: 'ops/bot: #25: format and lint'

@@ -1,0 +1,16 @@
+version: "3"
+
+tasks:
+  image:
+    cmds:
+      - docker build -t {{.REGISTRY}}/vge.server:latest .
+  publish:
+    cmds:
+      - docker push {{.REGISTRY}}/vge.server:latest
+  deploy:
+    cmds:
+      - docker network create vge || true
+      - docker compose up -d
+  format:
+    cmds:
+      - gradle --no-daemon spotlessApply

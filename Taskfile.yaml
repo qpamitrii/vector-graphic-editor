@@ -1,0 +1,26 @@
+version: "3"
+
+vars:
+  REGISTRY: ghcr.io/fami-2026
+
+includes:
+  server:
+    taskfile: ./server/Taskfile.yaml
+    dir: ./server
+  client:
+    taskfile: ./frontend/Taskfile.yaml
+    dir: ./frontend
+
+tasks:
+  image:
+    cmds:
+      - task: server:image
+      - task: client:image
+  publish:
+    cmds:
+      - task: server:publish
+      - task: client:publish
+  deploy:
+    cmds:
+      - docker network create vge || true
+      - docker compose up -d

@@ -1,0 +1,7 @@
+networks:
+  vge:
+    external: true
+
+include:
+  - path: server/compose.yaml
+  - path: frontend/compose.yaml
