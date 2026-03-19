@@ -200,7 +200,6 @@ OpenAPI спецификация: `server/docs/openapi.yml`
 
 ```json
 {
-  "title": "My Canvas",
   "state": "{}"
 }
 ```
@@ -231,4 +230,4 @@ CI/CD:
 
 - Линт/формат в PR: `.github/workflows/ci.yaml`
 - Сборка и публикация образов: `.github/workflows/deploy.yaml`
-- Сборка devcontainer-образа: `.github/workflows/dev.yaml`# vector-graphic-editor
+- Сборка devcontainer-образа: `.github/workflows/dev.yaml`

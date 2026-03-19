@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia';
-import { ref, computed } from 'vue';
+import { ref, computed, watch } from 'vue';
 import type { Shape } from '@/canvas/types';
 import { shapeRegistry } from '@/canvas/types';
 import { generateId } from '@/canvas/utils/math';
@@ -34,6 +34,13 @@ type SceneSnapshot = {
     selectedId: string | null;
 };
 
+type VectorEditorExport = {
+    format: 'vector-editor';
+    version: 1;
+    exportedAt: string;
+    scene: SceneSnapshot;
+};
+
 export const useCanvasStore = defineStore('canvas', () => {
     const shapes = ref<Shape[]>([]);
     const selectedId = ref<string | null>(null);
@@ -42,6 +49,11 @@ export const useCanvasStore = defineStore('canvas', () => {
     const redoStack = ref<SceneSnapshot[]>([]);
     const isInteractionActive = ref(false);
     const HISTORY_LIMIT = 50;
+    const MIN_ZOOM = 10;
+    const MAX_ZOOM = 500;
+    const ZOOM_STEP = 10;
+    const zoom = ref(100);
+    const pan = ref({ x: 0, y: 0 });
 
     let isContinuousChangeActive = false;
     let continuousChangeTimer: number | null = null;
@@ -143,29 +155,61 @@ export const useCanvasStore = defineStore('canvas', () => {
     function addShape(
         type: string,
         pos: { x: number; y: number },
-        params?: ShapeParams
+        params?: ShapeParams,
+        recordHistory: boolean = true
     ) {
-        pushHistory();
+        if (recordHistory) {
+            pushHistory();
+        }
+
+        const existingShapesOfType = shapes.value.filter(
+            (s) => s.type === type
+        );
+        const typeName =
+            type === 'rect'
+                ? 'Прямоугольник'
+                : type === 'circle'
+                  ? 'Круг'
+                  : type === 'line'
+                    ? 'Линия'
+                    : type === 'polygon'
+                      ? 'Многоугольник'
+                      : type === 'star'
+                        ? 'Звезда'
+                        : type === 'triangle'
+                          ? 'Треугольник'
+                          : type === 'arrow'
+                            ? 'Стрелка'
+                            : type === 'hexagon'
+                              ? 'Шестиугольник'
+                              : type;
+
+        const number = existingShapesOfType.length + 1;
+        const defaultName = `${typeName} ${number}`;
+
+        let shape: Shape;
 
         if (type === 'polygon' && params?.sides) {
-            const shape = new PolygonShape(
+            shape = new PolygonShape(
                 generateId(),
                 pos,
                 params.sides,
                 100,
                 100,
                 0,
-                'transparent',
-                1,
-                '#000000',
+                '#3498db',
+                0,
+                '#2c3e50',
                 1,
                 2
             );
+            (shape as Shape).name = defaultName;
             shapes.value.push(shape);
             return shape;
         }
 
-        const shape = shapeRegistry.create(type, generateId(), pos);
+        shape = shapeRegistry.create(type, generateId(), pos);
+        (shape as Shape).name = defaultName;
         shapes.value.push(shape);
         return shape;
     }
@@ -209,6 +253,132 @@ export const useCanvasStore = defineStore('canvas', () => {
         selectedId.value = id;
     }
 
+    function setZoom(value: number) {
+        zoom.value = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, Math.round(value)));
+    }
+
+    function zoomIn() {
+        setZoom(zoom.value + ZOOM_STEP);
+    }
+
+    function zoomOut() {
+        setZoom(zoom.value - ZOOM_STEP);
+    }
+
+    function setPan(value: { x: number; y: number }) {
+        pan.value = { x: value.x, y: value.y };
+    }
+
+    function movePan(delta: { x: number; y: number }) {
+        pan.value = {
+            x: pan.value.x + delta.x,
+            y: pan.value.y + delta.y,
+        };
+    }
+
+    const STORAGE_KEY = 'vector-editor-canvas';
+
+    function saveToLocalStorage() {
+        try {
+            const data = {
+                shapes: shapes.value.map(serializeShape),
+                selectedId: selectedId.value,
+            };
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+        } catch (e) {
+            console.error('Ошибка сохранения:', e);
+        }
+    }
+
+    function loadFromLocalStorage() {
+        try {
+            const saved = localStorage.getItem(STORAGE_KEY);
+            if (!saved) return;
+
+            const data = JSON.parse(saved) as {
+                shapes: SerializedShape[];
+                selectedId: string | null;
+            };
+
+            const restored: Shape[] = data.shapes.map(
+                (plain: SerializedShape) => {
+                    const { type, id, position, ...rest } = plain;
+                    const shape = shapeRegistry.create(type, id, position);
+                    Object.assign(shape, rest);
+                    return shape as Shape;
+                }
+            );
+
+            shapes.value = restored;
+            selectedId.value = data.selectedId || null;
+        } catch (e) {
+            console.error('Ошибка загрузки:', e);
+        }
+    }
+
+    function exportToJson(): string {
+        const payload: VectorEditorExport = {
+            format: 'vector-editor',
+            version: 1,
+            exportedAt: new Date().toISOString(),
+            scene: createSnapshot(),
+        };
+
+        return JSON.stringify(payload, null, 2);
+    }
+
+    function importFromJson(json: string): {
+        success: boolean;
+        message: string;
+    } {
+        try {
+            const parsed = JSON.parse(json) as Partial<VectorEditorExport>;
+
+            if (parsed.format !== 'vector-editor' || parsed.version !== 1) {
+                return {
+                    success: false,
+                    message:
+                        'Неподдерживаемый формат файла. Ожидается vector-editor.',
+                };
+            }
+
+            if (!parsed.scene || !Array.isArray(parsed.scene.shapes)) {
+                return {
+                    success: false,
+                    message: 'Файл повреждён: отсутствует описание сцены.',
+                };
+            }
+
+            restoreSnapshot(parsed.scene);
+            undoStack.value = [];
+            redoStack.value = [];
+            isInteractionActive.value = false;
+            isContinuousChangeActive = false;
+            if (continuousChangeTimer !== null) {
+                window.clearTimeout(continuousChangeTimer);
+                continuousChangeTimer = null;
+            }
+
+            return { success: true, message: 'Проект успешно импортирован.' };
+        } catch (error) {
+            console.error('Ошибка импорта:', error);
+            return {
+                success: false,
+                message: 'Не удалось прочитать JSON-файл.',
+            };
+        }
+    }
+
+    loadFromLocalStorage();
+
+    watch(
+        [shapes, selectedId],
+        () => {
+            saveToLocalStorage();
+        },
+        { deep: true }
+    );
+
     return {
         shapes,
         selectedId,
@@ -222,7 +392,16 @@ export const useCanvasStore = defineStore('canvas', () => {
         redo,
         canUndo,
         canRedo,
+        zoom,
+        setZoom,
+        zoomIn,
+        zoomOut,
+        pan,
+        setPan,
+        movePan,
         startInteraction,
         endInteraction,
+        exportToJson,
+        importFromJson,
     };
 });

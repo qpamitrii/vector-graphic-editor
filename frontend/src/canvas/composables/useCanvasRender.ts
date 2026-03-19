@@ -15,7 +15,9 @@ const HANDLE_RADIUS = 4;
 export function useCanvasRender(
     canvasRef: Ref<HTMLCanvasElement | null>,
     shapes: Ref<Shape[]>,
-    selectedId: Ref<string | null>
+    selectedId: Ref<string | null>,
+    zoom: Ref<number>,
+    pan: Ref<{ x: number; y: number }>
 ) {
     /**
      * Рисует рамку выделения вокруг фигуры с учетом её поворота и масштаба.
@@ -116,6 +118,14 @@ export function useCanvasRender(
         if (!canvas || !ctx) return;
 
         ctx.clearRect(0, 0, canvas.width, canvas.height);
+        const zoomFactor = zoom.value / 100;
+        ctx.save();
+        ctx.translate(
+            canvas.width / 2 + pan.value.x,
+            canvas.height / 2 + pan.value.y
+        );
+        ctx.scale(zoomFactor, zoomFactor);
+        ctx.translate(-canvas.width / 2, -canvas.height / 2);
 
         for (const shape of shapes.value) {
             ctx.save();
@@ -131,6 +141,7 @@ export function useCanvasRender(
                 drawSelectionBox(ctx, selectedShape);
             }
         }
+        ctx.restore();
     }
 
     return { draw };

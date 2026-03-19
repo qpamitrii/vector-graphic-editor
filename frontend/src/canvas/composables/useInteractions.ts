@@ -1,7 +1,7 @@
 import { ref, watch, type Ref } from 'vue';
 import type { Shape, Point, BoundingBox, LineShape } from '@/canvas/types';
 import { useCanvasStore } from '@/stores/canvas';
-import { useToolsStore } from '@/stores/tools';
+import { useToolsStore, type ToolType } from '@/stores/tools';
 import { SELECTION_PADDING } from '@/canvas/types';
 
 type ResizeHandle =
@@ -23,15 +23,20 @@ type ResizeHandle =
 
 export function useInteractions(
     canvasRef: Ref<HTMLCanvasElement | null>,
-    shapes: Ref<Shape[]>
+    shapes: Ref<Shape[]>,
+    zoom: Ref<number>,
+    pan: Ref<{ x: number; y: number }>
 ) {
     const canvasStore = useCanvasStore();
     const toolsStore = useToolsStore();
 
     const isDragging = ref(false);
     const isResizing = ref(false);
+    const isCreating = ref(false);
+    const isPanning = ref(false);
 
     const dragStart = ref<Point>({ x: 0, y: 0 });
+    const panStart = ref<Point>({ x: 0, y: 0 });
     const activeShape = ref<Shape | null>(null);
     const resizeHandle = ref<ResizeHandle | null>(null);
 
@@ -40,12 +45,16 @@ export function useInteractions(
     const resizeStartInverse = ref<DOMMatrix | null>(null);
     const resizeStartScale = ref<Point>({ x: 1, y: 1 });
     const lineStartLocal = ref<Point | null>(null);
-
+    const hasRecordedInteraction = ref(false);
+    const createStart = ref<Point | null>(null);
+    const createToolType = ref<ToolType | null>(null);
+    const createParams = ref<Record<string, unknown> | null>(null);
 
     // Синхронизация выделенной фигуры из стора
     watch(
         [() => canvasStore.selectedId, shapes],
         () => {
+            if (isCreating.value) return;
             const selected =
                 shapes.value.find(
                     (shape) => shape.id === canvasStore.selectedId
@@ -60,6 +69,9 @@ export function useInteractions(
                 resizeStartMatrix.value = null;
                 resizeStartInverse.value = null;
                 lineStartLocal.value = null;
+                createStart.value = null;
+                createToolType.value = null;
+                createParams.value = null;
             }
         },
         { immediate: true }
@@ -70,9 +82,32 @@ export function useInteractions(
      */
     function getLocalPoint(e: MouseEvent): Point {
         const rect = canvasRef.value?.getBoundingClientRect();
-        return rect
-            ? { x: e.clientX - rect.left, y: e.clientY - rect.top }
-            : { x: 0, y: 0 };
+        if (!rect) return { x: 0, y: 0 };
+
+        const zoomFactor = zoom.value / 100;
+        const screenX = e.clientX - rect.left;
+        const screenY = e.clientY - rect.top;
+        const centerX = rect.width / 2;
+        const centerY = rect.height / 2;
+
+        return {
+            x: centerX + (screenX - centerX - pan.value.x) / zoomFactor,
+            y: centerY + (screenY - centerY - pan.value.y) / zoomFactor,
+        };
+    }
+
+    function onWheel(e: WheelEvent) {
+        if (!(e.ctrlKey || e.metaKey)) return;
+        e.preventDefault();
+
+        if (e.deltaY < 0) {
+            canvasStore.zoomIn();
+            return;
+        }
+
+        if (e.deltaY > 0) {
+            canvasStore.zoomOut();
+        }
     }
 
     /**
@@ -200,10 +235,23 @@ export function useInteractions(
     }
 
     function onMouseDown(e: MouseEvent) {
+        const canvas = canvasRef.value;
+
+        if (
+            e.button === 1 ||
+            (toolsStore.activeTool === 'hand' && e.button === 0)
+        ) {
+            e.preventDefault();
+            isPanning.value = true;
+            panStart.value = { x: e.clientX, y: e.clientY };
+            if (canvas) {
+                canvas.style.cursor = 'grabbing';
+            }
+            return;
+        }
+
         const point = getLocalPoint(e);
         const topShape = hitTest(point);
-
-        canvasStore.startInteraction();
 
         if (toolsStore.activeTool === 'eraser') {
             if (topShape) {
@@ -211,6 +259,23 @@ export function useInteractions(
                 if (activeShape.value?.id === topShape.id) {
                     activeShape.value = null;
                 }
+            }
+            return;
+        }
+
+        if (toolsStore.activeTool !== 'select') {
+            canvasStore.selectShape(null);
+            activeShape.value = null;
+            isCreating.value = true;
+            createStart.value = point;
+            createToolType.value = toolsStore.activeTool;
+            if ('creationParams' in toolsStore) {
+                const store = toolsStore as {
+                    creationParams?: Record<string, unknown> | null;
+                };
+                createParams.value = store.creationParams ?? null;
+            } else {
+                createParams.value = null;
             }
             return;
         }
@@ -249,12 +314,103 @@ export function useInteractions(
         const canvas = canvasRef.value;
         if (!canvas) return;
 
+        if (isPanning.value) {
+            const dx = e.clientX - panStart.value.x;
+            const dy = e.clientY - panStart.value.y;
+            if (dx !== 0 || dy !== 0) {
+                canvasStore.movePan({ x: dx, y: dy });
+                panStart.value = { x: e.clientX, y: e.clientY };
+            }
+            canvas.style.cursor = 'grabbing';
+            return;
+        }
+
+        if (isCreating.value && createStart.value) {
+            const start = createStart.value;
+
+            let current = { ...point };
+            let dx = current.x - start.x;
+            let dy = current.y - start.y;
+            const distanceSq = dx * dx + dy * dy;
+
+            const MIN_DRAG_DISTANCE_SQ = 4;
+            if (distanceSq < MIN_DRAG_DISTANCE_SQ) {
+                return;
+            }
+
+            if (!activeShape.value) {
+                if (!createToolType.value) return;
+
+                if (!hasRecordedInteraction.value) {
+                    canvasStore.startInteraction();
+                    hasRecordedInteraction.value = true;
+                }
+
+                const newShape = canvasStore.addShape(
+                    createToolType.value,
+                    { x: start.x, y: start.y },
+                    createParams.value ?? undefined,
+                    false
+                );
+
+                canvasStore.selectShape(newShape.id);
+                activeShape.value = newShape;
+            }
+
+            if (!activeShape.value) return;
+
+            if (e.shiftKey) {
+                if (activeShape.value.type === 'line') {
+                    const length = Math.sqrt(distanceSq);
+                    if (length > 0) {
+                        const angle = Math.atan2(dy, dx);
+                        const snap =
+                            Math.round(angle / (Math.PI / 4)) * (Math.PI / 4);
+                        dx = length * Math.cos(snap);
+                        dy = length * Math.sin(snap);
+                        current = { x: start.x + dx, y: start.y + dy };
+                    }
+                } else {
+                    const size = Math.max(Math.abs(dx), Math.abs(dy));
+                    const signX = dx >= 0 ? 1 : -1;
+                    const signY = dy >= 0 ? 1 : -1;
+                    dx = signX * size;
+                    dy = signY * size;
+                    current = { x: start.x + dx, y: start.y + dy };
+                }
+            }
+
+            if (activeShape.value.type === 'line') {
+                const line = activeShape.value as LineShape;
+                line.position = { x: start.x, y: start.y };
+                line.localEndPoint = {
+                    x: current.x - start.x,
+                    y: current.y - start.y,
+                };
+            } else {
+                const width = Math.max(1, Math.abs(current.x - start.x));
+                const height = Math.max(1, Math.abs(current.y - start.y));
+                const centerX = (start.x + current.x) / 2;
+                const centerY = (start.y + current.y) / 2;
+
+                activeShape.value.position = { x: centerX, y: centerY };
+                activeShape.value.setSize(width, height);
+            }
+
+            canvas.style.cursor = 'crosshair';
+            return;
+        }
+
         if (isResizing.value && activeShape.value && resizeHandle.value) {
             const handle = resizeHandle.value;
             const shift = e.shiftKey;
 
             // 1. Поворот
             if (handle === 'rot') {
+                if (!hasRecordedInteraction.value) {
+                    canvasStore.startInteraction();
+                    hasRecordedInteraction.value = true;
+                }
                 const center = activeShape.value.position;
                 const angle = Math.atan2(
                     point.y - center.y,
@@ -289,6 +445,10 @@ export function useInteractions(
                 activeShape.value.type === 'line' &&
                 (handle === 's' || handle === 'e')
             ) {
+                if (!hasRecordedInteraction.value) {
+                    canvasStore.startInteraction();
+                    hasRecordedInteraction.value = true;
+                }
                 const line = activeShape.value as LineShape;
 
                 if (lineStartLocal.value) {
@@ -318,6 +478,10 @@ export function useInteractions(
             }
 
             // 3. Общий ресайз рамкой (для всего остального)
+            if (!hasRecordedInteraction.value) {
+                canvasStore.startInteraction();
+                hasRecordedInteraction.value = true;
+            }
             let nMinX = startBox.minX,
                 nMaxX = startBox.maxX;
             let nMinY = startBox.minY,
@@ -421,6 +585,10 @@ export function useInteractions(
         if (isDragging.value && activeShape.value) {
             const dx = point.x - dragStart.value.x;
             const dy = point.y - dragStart.value.y;
+            if (!hasRecordedInteraction.value && (dx !== 0 || dy !== 0)) {
+                canvasStore.startInteraction();
+                hasRecordedInteraction.value = true;
+            }
             activeShape.value.move({ x: dx, y: dy });
             dragStart.value = point;
             canvas.style.cursor = 'grabbing';
@@ -436,11 +604,56 @@ export function useInteractions(
         }
 
         const topShape = hitTest(point);
+        if (toolsStore.activeTool === 'hand') {
+            canvas.style.cursor = 'grab';
+            return;
+        }
         canvas.style.cursor = topShape ? 'grab' : 'default';
     }
 
     function onMouseUp(e: MouseEvent) {
-        canvasStore.endInteraction();
+        if (isPanning.value) {
+            isPanning.value = false;
+            const canvas = canvasRef.value;
+            if (canvas) {
+                canvas.style.cursor =
+                    toolsStore.activeTool === 'hand' ? 'grab' : 'default';
+            }
+            return;
+        }
+
+        if (isCreating.value) {
+            if (activeShape.value) {
+                if (hasRecordedInteraction.value) {
+                    canvasStore.endInteraction();
+                    hasRecordedInteraction.value = false;
+                }
+                toolsStore.setActiveTool('select');
+                if ('setCreationParams' in toolsStore) {
+                    const store = toolsStore as {
+                        setCreationParams?: (
+                            params: Record<string, unknown> | null
+                        ) => void;
+                    };
+                    store.setCreationParams?.(null);
+                }
+            }
+
+            isCreating.value = false;
+            createStart.value = null;
+            createToolType.value = null;
+            createParams.value = null;
+            const canvas = canvasRef.value;
+            if (canvas) {
+                canvas.style.cursor = 'default';
+            }
+            return;
+        }
+
+        if (hasRecordedInteraction.value) {
+            canvasStore.endInteraction();
+        }
+        hasRecordedInteraction.value = false;
         isDragging.value = false;
         isResizing.value = false;
         resizeHandle.value = null;
@@ -452,15 +665,25 @@ export function useInteractions(
         onMouseMove(e);
     }
 
+    function onAuxClick(event: MouseEvent) {
+        if (event.button === 1) {
+            event.preventDefault();
+        }
+    }
+
     function attachListeners() {
         const el = canvasRef.value;
         if (!el) return;
         el.addEventListener('mousedown', onMouseDown);
+        el.addEventListener('auxclick', onAuxClick);
+        el.addEventListener('wheel', onWheel, { passive: false });
         window.addEventListener('mousemove', onMouseMove);
         window.addEventListener('mouseup', onMouseUp);
 
         return () => {
             el.removeEventListener('mousedown', onMouseDown);
+            el.removeEventListener('wheel', onWheel);
+            el.removeEventListener('auxclick', onAuxClick);
             window.removeEventListener('mousemove', onMouseMove);
             window.removeEventListener('mouseup', onMouseUp);
         };

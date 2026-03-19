@@ -72,9 +72,9 @@ export class HexagonShape extends BaseShape {
         width: number = 100,
         height: number = 100,
         rotation: number = 0,
-        fill: string = 'transparent',
-        fillOpacity: number = 1,
-        stroke: string = '#000000',
+        fill: string = '#3498db',
+        fillOpacity: number = 0,
+        stroke: string = '#2c3e50',
         strokeOpacity: number = 1,
         strokeWidth: number = 2
     ) {
@@ -94,26 +94,36 @@ export class HexagonShape extends BaseShape {
         this.height = height;
     }
 
-    private getPoints(): Point[] {
-        const points: Point[] = [];
+    private getLocalPoints(): Point[] {
+        const tempPoints: Point[] = [];
+        const startAngle = 0;
         const angleStep = (Math.PI * 2) / 6;
-        const rotationRad = (this.rotation * Math.PI) / 180;
-        const radiusX = this.width / 2;
-        const radiusY = this.height / 2;
 
         for (let i = 0; i < 6; i++) {
-            const angle = i * angleStep + rotationRad;
-            points.push({
-                x: this.position.x + radiusX * Math.cos(angle),
-                y: this.position.y + radiusY * Math.sin(angle),
+            const angle = startAngle + i * angleStep;
+            tempPoints.push({
+                x: Math.cos(angle),
+                y: Math.sin(angle),
             });
         }
 
-        return points;
+        const minX = Math.min(...tempPoints.map((p) => p.x));
+        const maxX = Math.max(...tempPoints.map((p) => p.x));
+        const minY = Math.min(...tempPoints.map((p) => p.y));
+        const maxY = Math.max(...tempPoints.map((p) => p.y));
+
+        const currentW = maxX - minX;
+        const currentH = maxY - minY;
+
+        return tempPoints.map((p) => ({
+            x: ((p.x - minX) / currentW - 0.5) * this.width,
+            y: ((p.y - minY) / currentH - 0.5) * this.height,
+        }));
     }
 
-    hitTest(point: Point): boolean {
-        const points = this.getPoints();
+    hitTest(globalPoint: Point): boolean {
+        const localPoint = this.toVLocalPoint(globalPoint);
+        const points = this.getLocalPoints();
         const padding = this.strokeWidth / 2 + 3;
 
         if (points.length < 3) return false;
@@ -126,23 +136,24 @@ export class HexagonShape extends BaseShape {
             if (!p1 || !p2) continue;
 
             const intersect =
-                p1.y > point.y !== p2.y > point.y &&
-                point.x <
-                    ((p2.x - p1.x) * (point.y - p1.y)) / (p2.y - p1.y) + p1.x;
+                p1.y > localPoint.y !== p2.y > localPoint.y &&
+                localPoint.x <
+                    ((p2.x - p1.x) * (localPoint.y - p1.y)) / (p2.y - p1.y) +
+                        p1.x;
 
             if (intersect) inside = !inside;
         }
 
-        if (!inside) {
-            for (let i = 0; i < points.length; i++) {
-                const j = (i + 1) % points.length;
-                const p1 = points[i];
-                const p2 = points[j];
+        if (inside) return true;
 
-                if (p1 && p2) {
-                    const distance = this.distanceToSegment(point, p1, p2);
-                    if (distance <= padding) return true;
-                }
+        for (let i = 0; i < points.length; i++) {
+            const j = (i + 1) % points.length;
+            const pi = points[i];
+            const pj = points[j];
+
+            if (pi && pj) {
+                const distance = this.distanceToSegment(localPoint, pi, pj);
+                if (distance <= padding) return true;
             }
         }
 
@@ -172,26 +183,20 @@ export class HexagonShape extends BaseShape {
     }
 
     getBoundingBox(): BoundingBox {
-        const points = this.getPoints();
-
-        let minX = Infinity,
-            minY = Infinity,
-            maxX = -Infinity,
-            maxY = -Infinity;
-
-        for (const p of points) {
-            minX = Math.min(minX, p.x);
-            minY = Math.min(minY, p.y);
-            maxX = Math.max(maxX, p.x);
-            maxY = Math.max(maxY, p.y);
-        }
+        const localBox = this.getLocalBox();
+        const corners = [
+            this.toGlobalPoint({ x: localBox.minX, y: localBox.minY }),
+            this.toGlobalPoint({ x: localBox.maxX, y: localBox.minY }),
+            this.toGlobalPoint({ x: localBox.maxX, y: localBox.maxY }),
+            this.toGlobalPoint({ x: localBox.minX, y: localBox.maxY }),
+        ];
 
         const padding = this.strokeWidth / 2 + 5;
         return {
-            minX: minX - padding,
-            minY: minY - padding,
-            maxX: maxX + padding,
-            maxY: maxY + padding,
+            minX: Math.min(...corners.map((p) => p.x)) - padding,
+            minY: Math.min(...corners.map((p) => p.y)) - padding,
+            maxX: Math.max(...corners.map((p) => p.x)) + padding,
+            maxY: Math.max(...corners.map((p) => p.y)) + padding,
         };
     }
 
@@ -207,28 +212,24 @@ export class HexagonShape extends BaseShape {
     }
 
     render(ctx: CanvasRenderingContext2D): void {
-        const points = this.getPoints();
+        const points = this.getLocalPoints();
+        if (points.length < 3) return;
 
-        const validPoints: Point[] = [];
-        for (let i = 0; i < points.length; i++) {
-            const point = points[i];
-            if (point) {
-                validPoints.push(point);
-            }
-        }
+        const firstPoint = points[0];
+        if (!firstPoint) return;
 
-        if (validPoints.length < 3) return;
+        ctx.save();
+
+        const m = this.getVMatrix();
+        ctx.transform(m.a, m.b, m.c, m.d, m.e, m.f);
 
         ctx.beginPath();
-
-        const firstPoint = validPoints[0];
-        if (!firstPoint) return;
         ctx.moveTo(firstPoint.x, firstPoint.y);
 
-        for (let i = 1; i < validPoints.length; i++) {
-            const point = validPoints[i];
-            if (point) {
-                ctx.lineTo(point.x, point.y);
+        for (let i = 1; i < points.length; i++) {
+            const p = points[i];
+            if (p) {
+                ctx.lineTo(p.x, p.y);
             }
         }
 
@@ -243,7 +244,7 @@ export class HexagonShape extends BaseShape {
         ctx.lineWidth = this.strokeWidth;
         ctx.stroke();
 
-        ctx.globalAlpha = 1;
+        ctx.restore();
     }
 
     move(delta: Point): void {
