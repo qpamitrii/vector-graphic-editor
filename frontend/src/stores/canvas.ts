@@ -10,7 +10,7 @@ import {
     updateCanvas,
     CanvasApiError,
     CanvasNotFoundError,
-} from '@/api/canvas';
+} from '@/api/api';
 
 interface ShapeParams extends Record<string, unknown> {
     sides?: number;
