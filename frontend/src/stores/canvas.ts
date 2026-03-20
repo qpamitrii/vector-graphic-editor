@@ -510,6 +510,9 @@ export const useCanvasStore = defineStore('canvas', () => {
     return {
         shapes,
         selectedId,
+        MIN_ZOOM,
+        MAX_ZOOM,
+        ZOOM_STEP,
         selectedShape,
         addShape,
         updateShape,
