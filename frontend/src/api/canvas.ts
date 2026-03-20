@@ -28,7 +28,22 @@ export class CanvasNotFoundError extends CanvasApiError {
     }
 }
 
-const SERVER_ADDR = import.meta.env.VITE_SERVER_ADDR;
+const DEFAULT_SERVER_PORT = '8080';
+
+function resolveServerAddress(): string {
+    const configured = String(import.meta.env.VITE_SERVER_ADDR ?? '').trim();
+    if (configured.length > 0) {
+        return configured;
+    }
+
+    if (typeof window !== 'undefined' && window.location.hostname) {
+        return `${window.location.hostname}:${DEFAULT_SERVER_PORT}`;
+    }
+
+    return `localhost:${DEFAULT_SERVER_PORT}`;
+}
+
+const SERVER_ADDR = resolveServerAddress();
 const BASE_URL = `http://${SERVER_ADDR}/api/canvas`;
 
 function toObjectContent(content: unknown): Record<string, unknown> {
