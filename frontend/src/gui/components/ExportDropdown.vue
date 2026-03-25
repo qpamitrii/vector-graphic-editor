@@ -37,6 +37,22 @@
             >
                 JSON
             </button>
+            <button
+                class="item"
+                role="menuitem"
+                type="button"
+                @click="openExport('svg')"
+            >
+                SVG
+            </button>
+            <button
+                class="item"
+                role="menuitem"
+                type="button"
+                @click="exportJson"
+            >
+                JSON
+            </button>
         </div>
     </div>
 
@@ -49,7 +65,7 @@
     >
         <div class="modalCard">
             <div class="modalHead">
-                <h3>Экспорт PNG</h3>
+                <h3>Экспорт {{ form.format.toUpperCase() }}</h3>
             </div>
 
             <label class="field">
@@ -67,6 +83,7 @@
                 <select v-model="form.pngBackground">
                     <option value="transparent">Прозрачный</option>
                     <option value="white">Белый</option>
+                    <option value="current">Текущий</option>
                 </select>
             </label>
 
@@ -84,7 +101,7 @@
                     Отмена
                 </button>
                 <button class="btn" type="button" @click="submitExport">
-                    Скачать PNG
+                    Скачать {{ form.format.toUpperCase() }}
                 </button>
             </div>
         </div>
@@ -100,23 +117,25 @@ import {
     exportScene,
     sanitizeFileName,
     type ExportArea,
+    type ExportBackground,
     type ExportFormat,
-    type PngBackground,
     type PngScale,
 } from '@/canvas/utils/export';
+
+type ExportBackgroundMode = 'transparent' | 'white' | 'current';
 
 const open = ref(false);
 const showExport = ref(false);
 const root = ref<HTMLElement | null>(null);
 const canvasStore = useCanvasStore();
-const { shapes, selectedId } = storeToRefs(canvasStore);
+const { shapes, selectedId, backgroundColor } = storeToRefs(canvasStore);
 
 const form = reactive<{
     fileName: string;
     format: ExportFormat;
     area: ExportArea;
     pngScale: PngScale;
-    pngBackground: PngBackground;
+    pngBackground: ExportBackgroundMode;
 }>({
     fileName: 'vector-export',
     format: 'png',
@@ -167,6 +186,14 @@ function normalizeFileName() {
     form.fileName = sanitizeFileName(form.fileName);
 }
 
+function resolveExportBackground(): ExportBackground {
+    if (form.pngBackground === 'current') {
+        return backgroundColor.value || '#ffffff';
+    }
+
+    return form.pngBackground;
+}
+
 function exportJson() {
     const json = canvasStore.exportToJson();
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -195,7 +222,7 @@ async function submitExport() {
             sceneSize: getSceneSize(),
             selectedId: selectedId.value,
             pngScale: form.pngScale,
-            pngBackground: form.pngBackground,
+            background: resolveExportBackground(),
         });
 
         closeExport();

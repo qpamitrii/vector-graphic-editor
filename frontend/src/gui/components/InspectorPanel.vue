@@ -14,7 +14,8 @@
                         aria-label="X"
                         :value="selectedShape?.x ?? ''"
                         :disabled="!selectedShape"
-                        @input="onNumberChange('x', $event)"
+                        @blur="onNumberChange('x', $event)"
+                        @keydown.enter.prevent="onNumberEnter('x', $event)"
                         @wheel.prevent="onWheelChange('x', $event)"
                     />
                     <input
@@ -23,7 +24,8 @@
                         aria-label="Y"
                         :value="selectedShape?.y ?? ''"
                         :disabled="!selectedShape"
-                        @input="onNumberChange('y', $event)"
+                        @blur="onNumberChange('y', $event)"
+                        @keydown.enter.prevent="onNumberEnter('y', $event)"
                         @wheel.prevent="onWheelChange('y', $event)"
                     />
                 </div>
@@ -41,7 +43,10 @@
                             :value="shapeWidth"
                             :disabled="!selectedShape"
                             min="1"
-                            @input="onNumberChange('width', $event)"
+                            @blur="onNumberChange('width', $event)"
+                            @keydown.enter.prevent="
+                                onNumberEnter('width', $event)
+                            "
                             @wheel.prevent="onWheelChange('width', $event)"
                         />
                         <input
@@ -51,7 +56,10 @@
                             :value="shapeHeight"
                             :disabled="!selectedShape"
                             min="1"
-                            @input="onNumberChange('height', $event)"
+                            @blur="onNumberChange('height', $event)"
+                            @keydown.enter.prevent="
+                                onNumberEnter('height', $event)
+                            "
                             @wheel.prevent="onWheelChange('height', $event)"
                         />
                     </div>
@@ -95,7 +103,10 @@
                         :disabled="!selectedShape"
                         min="0"
                         max="360"
-                        @input="onNumberChange('rotation', $event)"
+                        @blur="onNumberChange('rotation', $event)"
+                        @keydown.enter.prevent="
+                            onNumberEnter('rotation', $event)
+                        "
                         @wheel.prevent="onWheelChange('rotation', $event)"
                     />
                     <div class="spacer" aria-hidden="true" />
@@ -109,16 +120,31 @@
         <section class="group">
             <h3 class="groupTitle">Фигура</h3>
 
-            <div class="grid2Blocks">
+            <div
+                class="grid2Blocks"
+                :style="{
+                    opacity: isFillDisabled ? 0.55 : 1,
+                }"
+            >
                 <div class="fieldBlock">
                     <div class="fieldLabel">Цвет заливки</div>
                     <div class="grid1">
                         <div class="colorInputWrapper">
                             <div
                                 class="colorPreview"
-                                :style="{ backgroundColor: fillColor }"
-                                :class="{ disabled: !selectedShape }"
-                                @click="showColorPicker('fill')"
+                                :style="{
+                                    backgroundColor: fillColor,
+                                    opacity: isFillDisabled ? 0.35 : 1,
+                                    cursor: isFillDisabled
+                                        ? 'not-allowed'
+                                        : 'pointer',
+                                }"
+                                :class="{
+                                    disabled: !selectedShape || !isFillDisabled,
+                                }"
+                                @click="
+                                    !isFillDisabled && showColorPicker('fill')
+                                "
                             />
 
                             <Teleport to="body">
@@ -151,7 +177,7 @@
                             max="1"
                             step="0.05"
                             :value="fillOpacity"
-                            :disabled="!selectedShape"
+                            :disabled="!selectedShape || isFillDisabled"
                             @input="onOpacityChange('fillOpacity', $event)"
                         />
                         <button
@@ -160,7 +186,7 @@
                             :class="{
                                 isActive: isNoColorActive('fillOpacity'),
                             }"
-                            :disabled="!selectedShape"
+                            :disabled="!selectedShape || isFillDisabled"
                             @click="setNoColor('fillOpacity')"
                         >
                             нет цвета
@@ -245,12 +271,65 @@
                         aria-label="Stroke width"
                         :value="strokeWidth"
                         :disabled="!selectedShape"
-                        min="0"
+                        min="1"
+                        max="5"
                         step="0.5"
-                        @input="onNumberChange('strokeWidth', $event)"
+                        @blur="onNumberChange('strokeWidth', $event)"
+                        @keydown.enter.prevent="
+                            onNumberEnter('strokeWidth', $event)
+                        "
                         @wheel.prevent="onWheelChange('strokeWidth', $event)"
                     />
                     <div class="spacer" aria-hidden="true" />
+                </div>
+            </div>
+        </section>
+
+        <div class="divider" />
+
+        <!-- Фон холста -->
+        <section class="group">
+            <h3 class="groupTitle">Фон холста</h3>
+
+            <div class="grid2Blocks">
+                <div class="fieldBlock">
+                    <div class="fieldLabel">Цвет фона</div>
+                    <div class="grid1">
+                        <div class="colorInputWrapper">
+                            <div
+                                class="colorPreview"
+                                :style="{
+                                    backgroundColor: canvasBackgroundColor,
+                                }"
+                                @click="showCanvasColorPicker"
+                            />
+
+                            <Teleport to="body">
+                                <div
+                                    v-if="activeCanvasPicker"
+                                    class="floatingColorPicker"
+                                    :style="pickerPosition"
+                                >
+                                    <input
+                                        ref="canvasColorInputRef"
+                                        type="color"
+                                        :value="canvasBackgroundColor"
+                                        @input="onCanvasColorChange"
+                                        @blur="activeCanvasPicker = false"
+                                    />
+                                </div>
+                            </Teleport>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="fieldBlock buttonBlock">
+                    <button
+                        class="smallToggleBtn"
+                        @click="resetCanvasBackground"
+                    >
+                        Нет цвета
+                    </button>
                 </div>
             </div>
         </section>
@@ -335,6 +414,15 @@
                                     stroke-width="2"
                                     stroke-linecap="round"
                                 />
+                                <polyline
+                                    v-else-if="shape.type === 'pencil'"
+                                    points="2,13 6,9 9,12 13,6 18,10"
+                                    fill="none"
+                                    :stroke="thumbStroke(shape)"
+                                    stroke-width="2"
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                />
                                 <!-- Все остальные полигональные фигуры -->
                                 <polygon
                                     v-else
@@ -407,6 +495,7 @@ interface ShapeWithName extends Shape {
 const editingLayerName = ref('');
 const isSaving = ref(false);
 const forceUpdate = ref(0);
+const isFillDisabled = computed(() => selectedShape.value?.type === 'pencil');
 
 function getShapeDisplayName(shape: Shape) {
     const shapeWithName = shape as ShapeWithName;
@@ -477,24 +566,36 @@ function onLayerNameEnter(shapeId: string) {
 }
 
 function handleClickOutside(event: MouseEvent) {
-    if (!activePicker.value) return;
+    if (activePicker.value) {
+        const target = event.target as HTMLElement;
+        const isClickOnPreview = target.classList.contains('colorPreview');
+        const isClickInPicker = target.closest('.floatingColorPicker');
 
-    const target = event.target as HTMLElement;
-    const isClickOnPreview = target.classList.contains('colorPreview');
-    const isClickInPicker = target.closest('.floatingColorPicker');
+        if (!isClickInPicker && !isClickOnPreview) {
+            activePicker.value = null;
+        }
+    }
 
-    if (!isClickInPicker && !isClickOnPreview) {
-        activePicker.value = null;
+    if (activeCanvasPicker.value) {
+        const target = event.target as HTMLElement;
+        const isClickOnPreview = target.classList.contains('colorPreview');
+        const isClickInPicker = target.closest('.floatingColorPicker');
+
+        if (!isClickInPicker && !isClickOnPreview) {
+            activeCanvasPicker.value = false;
+        }
     }
 }
 onMounted(() => {
     window.addEventListener('keydown', handleKeyDown);
-    document.addEventListener('click', handleClickOutside); // Добавьте эту строку
+    document.addEventListener('click', handleClickOutside);
+    document.addEventListener('mousedown', commitAfterClick, true);
 });
 
 onUnmounted(() => {
     window.removeEventListener('keydown', handleKeyDown);
-    document.removeEventListener('click', handleClickOutside); // Добавьте эту строку
+    document.removeEventListener('click', handleClickOutside);
+    document.removeEventListener('mousedown', commitAfterClick, true);
 });
 
 const canvasStore = useCanvasStore();
@@ -562,15 +663,91 @@ type NumberFieldKey =
     | 'scaleX'
     | 'scaleY';
 
-function onNumberChange(key: NumberFieldKey, event: Event) {
+function getCurrentNumberValue(key: NumberFieldKey): number | null {
+    if (!selectedShape.value) return null;
+    const value = (selectedShape.value as unknown as Record<string, unknown>)[
+        key
+    ];
+    return typeof value === 'number' ? value : null;
+}
+
+function normalizeNumberByKey(key: NumberFieldKey, value: number) {
+    if (key === 'width' || key === 'height') {
+        return Math.max(1, value);
+    }
+    if (key === 'strokeWidth') {
+        return Math.min(5, Math.max(1, value));
+    }
+    if (key === 'rotation') {
+        return ((value % 360) + 360) % 360;
+    }
+    return value;
+}
+
+function applyNumberValue(key: NumberFieldKey, target: HTMLInputElement) {
     if (!selectedShape.value) return;
-    const target = event.target as HTMLInputElement;
-    const value = Number(target.value);
-    if (Number.isNaN(value)) return;
+    const raw = target.value.trim();
+    if (raw === '') {
+        const currentValue = getCurrentNumberValue(key);
+        target.value = currentValue === null ? '' : String(currentValue);
+        return;
+    }
+    const parsed = Number(raw);
+    if (Number.isNaN(parsed)) {
+        if (selectedShape.value) {
+            const currentValue = getCurrentNumberValue(key);
+            target.value = currentValue === null ? '' : String(currentValue);
+        }
+        return;
+    }
+
+    const normalized =
+        Math.round(normalizeNumberByKey(key, parsed) * 100) / 100;
+    target.value = String(normalized);
+    const currentValue = getCurrentNumberValue(key);
+
+    if (currentValue !== null && normalized === currentValue) {
+        return;
+    }
 
     canvasStore.updateShape(selectedShape.value.id, {
-        [key]: value,
+        [key]: normalized,
     } as Partial<Shape>);
+}
+
+function onNumberChange(key: NumberFieldKey, event: Event) {
+    const target = event.target as HTMLInputElement;
+    applyNumberValue(key, target);
+}
+
+function onNumberEnter(key: NumberFieldKey, event: KeyboardEvent) {
+    onNumberChange(key, event);
+    const target = event.target as HTMLInputElement | null;
+    target?.blur();
+}
+
+function commitAfterClick(event: MouseEvent) {
+    const target = event.target as HTMLElement | null;
+    if (target?.closest('.panel')) return;
+
+    const activeElement = document.activeElement;
+    if (!(activeElement instanceof HTMLInputElement)) return;
+    if (activeElement.type !== 'number') return;
+    if (!activeElement.closest('.panel')) return;
+
+    const keyMap: Record<string, NumberFieldKey> = {
+        X: 'x',
+        Y: 'y',
+        Width: 'width',
+        Height: 'height',
+        Rotation: 'rotation',
+        'Stroke width': 'strokeWidth',
+    };
+    const ariaLabel = activeElement.getAttribute('aria-label') ?? '';
+    const key = keyMap[ariaLabel];
+    if (!key) return;
+
+    applyNumberValue(key, activeElement);
 }
 
 function onWheelChange(key: NumberFieldKey, event: WheelEvent) {
@@ -591,7 +768,7 @@ function onWheelChange(key: NumberFieldKey, event: WheelEvent) {
         newValue = ((newValue % 360) + 360) % 360;
     }
     if (key === 'strokeWidth') {
-        newValue = Math.max(0, newValue);
+        newValue = Math.min(5, Math.max(1, newValue));
     }
 
     canvasStore.updateShape(selectedShape.value.id, {
@@ -656,7 +833,7 @@ function thumbFill(shape: Shape): string {
     const fill = (shape as unknown as Record<string, unknown>).fill as
         | string
         | undefined;
-    if (!fill || fill === 'transparent') return '#e5e7eb';
+    if (!fill || fill === 'transparent') return 'transparent';
     return fill;
 }
 
@@ -664,10 +841,11 @@ function thumbFillOpacity(shape: Shape): number {
     const fill = (shape as unknown as Record<string, unknown>).fill as
         | string
         | undefined;
-    if (!fill || fill === 'transparent') return 0.4;
+    if (!fill || fill === 'transparent') return 0;
+
     const opacity = (shape as unknown as Record<string, unknown>)
         .fillOpacity as number | undefined;
-    return typeof opacity === 'number' ? Math.max(0.15, opacity) : 1;
+    return typeof opacity === 'number' ? Math.max(0, Math.min(1, opacity)) : 1;
 }
 
 function thumbStroke(shape: Shape): string {
@@ -746,10 +924,21 @@ function isNoColorActive(key: OpacityFieldKey) {
 
 function setNoColor(key: OpacityFieldKey) {
     if (!selectedShape.value) return;
+    const currentOpacity =
+        key === 'fillOpacity' ? fillOpacity.value : strokeOpacity.value;
+    const isCurrentlyNoColor =
+        typeof currentOpacity === 'number' &&
+        normalizeOpacity(currentOpacity) === 0;
 
-    canvasStore.updateShape(selectedShape.value.id, {
-        [key]: 0,
-    } as Partial<Shape>);
+    if (isCurrentlyNoColor) {
+        canvasStore.updateShape(selectedShape.value.id, {
+            [key]: 1,
+        } as Partial<Shape>);
+    } else {
+        canvasStore.updateShape(selectedShape.value.id, {
+            [key]: 0,
+        } as Partial<Shape>);
+    }
 }
 
 function shapeLabel(type: string) {
@@ -762,6 +951,7 @@ function shapeLabel(type: string) {
         star: 'Звезда',
         arrow: 'Стрелка',
         hexagon: 'Шестиугольник',
+        pencil: 'Карандаш',
     };
     return labels[type] ?? type;
 }
@@ -900,6 +1090,50 @@ onMounted(() => {
 onUnmounted(() => {
     window.removeEventListener('keydown', handleKeyDown);
 });
+
+const activeCanvasPicker = ref(false);
+const canvasColorInputRef = ref<HTMLInputElement | null>(null);
+const canvasBackgroundColor = computed(() => {
+    return canvasStore.backgroundColor || '#ffffff';
+});
+
+// Функция показа пикера для фона холста
+function showCanvasColorPicker() {
+    const previewElement = event?.currentTarget as HTMLElement;
+
+    if (previewElement) {
+        const rect = previewElement.getBoundingClientRect();
+
+        pickerPosition.value = {
+            position: 'absolute',
+            top: rect.bottom + window.scrollY - 35 + 'px',
+            left: rect.left + window.scrollX - 250 + 'px',
+            zIndex: 9999,
+        };
+
+        activeCanvasPicker.value = true;
+
+        nextTick(() => {
+            if (canvasColorInputRef.value) {
+                canvasColorInputRef.value.focus();
+                canvasColorInputRef.value.click();
+            }
+        });
+    }
+}
+
+// Функция изменения цвета фона холста
+function onCanvasColorChange(event: Event) {
+    const target = event.target as HTMLInputElement;
+    const value = target.value;
+
+    canvasStore.setBackgroundColor(value);
+}
+
+// Функция сброса цвета фона
+function resetCanvasBackground() {
+    canvasStore.setBackgroundColor('#ffffff');
+}
 </script>
 
 <style scoped>
@@ -1329,5 +1563,9 @@ onUnmounted(() => {
         opacity: 1;
         transform: translateY(0);
     }
+}
+
+.buttonBlock {
+    margin-top: 22px;
 }
 </style>

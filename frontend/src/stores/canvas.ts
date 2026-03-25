@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia';
 import { ref, computed, watch } from 'vue';
-import type { Shape } from '@/canvas/types';
+import type { Shape, Point } from '@/canvas/types';
 import { shapeRegistry } from '@/canvas/types';
 import { generateId } from '@/canvas/utils/math';
 import { PolygonShape } from '@/canvas/types/polygon/polygon';
@@ -46,6 +46,11 @@ type CanvasStorageData = {
     isOfflineMode: boolean;
     shapes: SerializedShape[];
     selectedId: string | null;
+    selectedIds?: string[];
+    selectionRect?: { start: Point; end: Point } | null;
+    zoom?: number;
+    pan?: { x: number; y: number };
+    backgroundColor?: string;
 };
 
 type VectorEditorExport = {
@@ -58,6 +63,14 @@ type VectorEditorExport = {
 export const useCanvasStore = defineStore('canvas', () => {
     const shapes = ref<Shape[]>([]);
     const selectedId = ref<string | null>(null);
+    const selectedIds = ref<string[]>([]);
+    const selectionBox = ref<{ start: Point | null; end: Point | null }>({
+        start: null,
+        end: null,
+    });
+    const selectionRect = ref<{ start: Point; end: Point } | null>(null);
+    const isSelecting = ref(false);
+    const dragStartPositions = ref<Map<string, Point>>(new Map());
 
     const undoStack = ref<SceneSnapshot[]>([]);
     const redoStack = ref<SceneSnapshot[]>([]);
@@ -71,10 +84,17 @@ export const useCanvasStore = defineStore('canvas', () => {
     const documentId = ref<string>('0');
     const isOfflineMode = ref(false);
     const serverError = ref<string | null>(null);
+    const backgroundColor = ref<string>('#ffffff');
 
     let isContinuousChangeActive = false;
     let continuousChangeTimer: number | null = null;
     const CONTINUOUS_CHANGE_TIMEOUT = 700;
+    const selectedShapes = computed(() =>
+        shapes.value.filter((s) => selectedIds.value.includes(s.id))
+    );
+
+    const hasSelection = computed(() => selectedIds.value.length > 0);
+    const selectionCount = computed(() => selectedIds.value.length);
 
     const selectedShape = computed(
         () => shapes.value.find((s) => s.id === selectedId.value) ?? null
@@ -108,6 +128,8 @@ export const useCanvasStore = defineStore('canvas', () => {
 
         shapes.value = restored;
         selectedId.value = snapshot.selectedId;
+        selectedIds.value = snapshot.selectedId ? [snapshot.selectedId] : [];
+        selectionRect.value = null;
     }
 
     function snapshotToServerContent(
@@ -118,7 +140,7 @@ export const useCanvasStore = defineStore('canvas', () => {
             selectedId: snapshot.selectedId,
         };
     }
-    
+
     function pushHistory() {
         const snapshot = createSnapshot();
         undoStack.value.push(snapshot);
@@ -178,6 +200,172 @@ export const useCanvasStore = defineStore('canvas', () => {
     const canUndo = computed(() => undoStack.value.length > 0);
     const canRedo = computed(() => redoStack.value.length > 0);
 
+    function selectShape(id: string | null) {
+        selectedId.value = id;
+        selectedIds.value = id ? [id] : [];
+        selectionRect.value = null;
+    }
+
+    function selectShapeWithAdd(
+        id: string | null,
+        addToSelection: boolean = false
+    ) {
+        if (!id) {
+            if (!addToSelection) {
+                selectedIds.value = [];
+                selectedId.value = null;
+                selectionRect.value = null;
+            }
+            return;
+        }
+
+        if (addToSelection) {
+            if (selectedIds.value.includes(id)) {
+                selectedIds.value = selectedIds.value.filter((i) => i !== id);
+            } else {
+                selectedIds.value = [...selectedIds.value, id];
+            }
+            selectedId.value = selectedIds.value[0] || null;
+        } else {
+            selectedIds.value = [id];
+            selectedId.value = id;
+            selectionRect.value = null;
+        }
+    }
+
+    function selectShapesInRect(rect: {
+        minX: number;
+        minY: number;
+        maxX: number;
+        maxY: number;
+    }) {
+        selectedIds.value = shapes.value
+            .filter((shape) => {
+                const box = shape.getBoundingBox();
+                return !(
+                    box.maxX < rect.minX ||
+                    box.minX > rect.maxX ||
+                    box.maxY < rect.minY ||
+                    box.minY > rect.maxY
+                );
+            })
+            .map((s) => s.id);
+        selectedId.value = selectedIds.value[0] || null;
+
+        if (selectedIds.value.length > 0) {
+            selectionRect.value = {
+                start: { x: rect.minX, y: rect.minY },
+                end: { x: rect.maxX, y: rect.maxY },
+            };
+        } else {
+            selectionRect.value = null;
+        }
+    }
+
+    function startSelection(startPoint: Point) {
+        selectionBox.value = { start: startPoint, end: startPoint };
+        selectionRect.value = null;
+        isSelecting.value = true;
+    }
+
+    function updateSelection(endPoint: Point) {
+        if (isSelecting.value && selectionBox.value.start) {
+            selectionBox.value.end = endPoint;
+        }
+    }
+
+    function endSelection() {
+        if (
+            isSelecting.value &&
+            selectionBox.value.start &&
+            selectionBox.value.end
+        ) {
+            const start = selectionBox.value.start;
+            const end = selectionBox.value.end;
+
+            const rect = {
+                minX: Math.min(start.x, end.x),
+                minY: Math.min(start.y, end.y),
+                maxX: Math.max(start.x, end.x),
+                maxY: Math.max(start.y, end.y),
+            };
+
+            selectShapesInRect(rect);
+        }
+
+        selectionBox.value = { start: null, end: null };
+        isSelecting.value = false;
+    }
+
+    function setDragStartPositions() {
+        dragStartPositions.value.clear();
+        selectedShapes.value.forEach((shape) => {
+            dragStartPositions.value.set(shape.id, { ...shape.position });
+        });
+    }
+
+    function moveSelectedShapes(delta: Point) {
+        selectedShapes.value.forEach((shape) => {
+            const startPos = dragStartPositions.value.get(shape.id);
+            if (startPos) {
+                shape.position.x = startPos.x + delta.x;
+                shape.position.y = startPos.y + delta.y;
+            }
+        });
+
+        if (selectionRect.value) {
+            selectionRect.value.start.x += delta.x;
+            selectionRect.value.start.y += delta.y;
+            selectionRect.value.end.x += delta.x;
+            selectionRect.value.end.y += delta.y;
+        }
+    }
+
+    function deleteSelectedShapes() {
+        if (selectedIds.value.length === 0) return;
+
+        pushHistory();
+        shapes.value = shapes.value.filter(
+            (s) => !selectedIds.value.includes(s.id)
+        );
+        selectedIds.value = [];
+        selectedId.value = null;
+        selectionRect.value = null;
+    }
+
+    function selectAll() {
+        if (shapes.value.length === 0) return;
+
+        selectedIds.value = shapes.value.map((s) => s.id);
+        selectedId.value = selectedIds.value[0] || null;
+
+        if (selectedIds.value.length > 0) {
+            const allPoints = shapes.value.flatMap((s) => {
+                const box = s.getBoundingBox();
+                return [
+                    { x: box.minX, y: box.minY },
+                    { x: box.maxX, y: box.maxY },
+                ];
+            });
+
+            const minX = Math.min(...allPoints.map((p) => p.x));
+            const minY = Math.min(...allPoints.map((p) => p.y));
+            const maxX = Math.max(...allPoints.map((p) => p.x));
+            const maxY = Math.max(...allPoints.map((p) => p.y));
+
+            selectionRect.value = {
+                start: { x: minX, y: minY },
+                end: { x: maxX, y: maxY },
+            };
+        }
+    }
+
+    function clearSelection() {
+        selectedIds.value = [];
+        selectedId.value = null;
+        selectionRect.value = null;
+    }
+
     function addShape(
         type: string,
         pos: { x: number; y: number },
@@ -208,7 +396,9 @@ export const useCanvasStore = defineStore('canvas', () => {
                             ? 'Стрелка'
                             : type === 'hexagon'
                               ? 'Шестиугольник'
-                              : type;
+                              : type === 'pencil'
+                                ? 'Карандаш'
+                                : type;
 
         const number = existingShapesOfType.length + 1;
         const defaultName = `${typeName} ${number}`;
@@ -241,18 +431,31 @@ export const useCanvasStore = defineStore('canvas', () => {
     }
 
     function updateShape(id: string, updates: Partial<Shape>) {
-        ensureHistoryForContinuousChange();
         const shape = shapes.value.find((s) => s.id === id);
-        if (shape) {
-            Object.assign(shape, updates);
-            shapes.value = [...shapes.value];
+        if (!shape) return;
+
+        const hasRealChange = Object.entries(updates).some(([key, value]) => {
+            const current = (shape as unknown as Record<string, unknown>)[key];
+            return !Object.is(current, value);
+        });
+
+        if (!hasRealChange) {
+            return;
         }
+
+        ensureHistoryForContinuousChange();
+        Object.assign(shape, updates);
+        shapes.value = [...shapes.value];
     }
 
     function deleteShape(id: string) {
         pushHistory();
         shapes.value = shapes.value.filter((s) => s.id !== id);
         if (selectedId.value === id) selectedId.value = null;
+        selectedIds.value = selectedIds.value.filter((i) => i !== id);
+        if (selectedIds.value.length === 0) {
+            selectionRect.value = null;
+        }
     }
 
     function moveShape(fromIndex: number, toIndex: number) {
@@ -275,20 +478,95 @@ export const useCanvasStore = defineStore('canvas', () => {
         shapes.value = next;
     }
 
-    function selectShape(id: string | null) {
-        selectedId.value = id;
+    function duplicateSelectedShape() {
+        const source = selectedShape.value;
+        if (!source) return;
+
+        pushHistory();
+
+        const plain = serializeShape(source);
+        const { type, id: _oldId, position, ...rest } = plain;
+
+        const newId = generateId();
+
+        const duplicate = shapeRegistry.create(type, newId, {
+            x: position.x + 5,
+            y: position.y + 5,
+        });
+
+        Object.assign(duplicate, rest);
+
+        duplicate.id = newId;
+        duplicate.position = {
+            x: duplicate.position.x + 5,
+            y: duplicate.position.y + 5,
+        };
+
+        const sourceName = (source as Shape & { name?: string }).name;
+        if (sourceName && sourceName.trim()) {
+            (duplicate as Shape & { name?: string }).name =
+                `${sourceName} копия`;
+        }
+
+        shapes.value.push(duplicate as Shape);
+        selectedId.value = newId;
     }
 
     function setZoom(value: number) {
-        zoom.value = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, Math.round(value)));
+        const newZoom = Math.max(
+            MIN_ZOOM,
+            Math.min(MAX_ZOOM, Math.round(value))
+        );
+        if (newZoom === zoom.value) return;
+
+        const worldCenterX = -pan.value.x / (zoom.value / 100);
+        const worldCenterY = -pan.value.y / (zoom.value / 100);
+
+        const newZoomFactor = newZoom / 100;
+        const newPanX = -worldCenterX * newZoomFactor;
+        const newPanY = -worldCenterY * newZoomFactor;
+
+        zoom.value = newZoom;
+        pan.value = { x: newPanX, y: newPanY };
     }
 
     function zoomIn() {
-        setZoom(zoom.value + ZOOM_STEP);
+        zoomAtCenter(ZOOM_STEP);
     }
 
     function zoomOut() {
-        setZoom(zoom.value - ZOOM_STEP);
+        zoomAtCenter(-ZOOM_STEP);
+    }
+
+    function zoomAtCenter(delta: number) {
+        const canvasEl = document.querySelector(
+            '.main-canvas'
+        ) as HTMLCanvasElement | null;
+        const rect = canvasEl?.getBoundingClientRect();
+
+        if (!rect) {
+            zoom.value = Math.max(
+                MIN_ZOOM,
+                Math.min(MAX_ZOOM, zoom.value + delta)
+            );
+            return;
+        }
+
+        const zoomFactor = zoom.value / 100;
+        const worldCenterX = -pan.value.x / zoomFactor;
+        const worldCenterY = -pan.value.y / zoomFactor;
+
+        const newZoom = Math.max(
+            MIN_ZOOM,
+            Math.min(MAX_ZOOM, zoom.value + delta)
+        );
+        const newZoomFactor = newZoom / 100;
+
+        const newPanX = -worldCenterX * newZoomFactor;
+        const newPanY = -worldCenterY * newZoomFactor;
+
+        zoom.value = newZoom;
+        pan.value = { x: newPanX, y: newPanY };
     }
 
     function setPan(value: { x: number; y: number }) {
@@ -302,6 +580,11 @@ export const useCanvasStore = defineStore('canvas', () => {
         };
     }
 
+    function setBackgroundColor(color: string) {
+        backgroundColor.value = color;
+        localStorage.setItem('canvas-bg-color', color);
+    }
+
     const STORAGE_KEY = 'vector-editor-canvas';
 
     function saveToLocalStorage() {
@@ -311,6 +594,13 @@ export const useCanvasStore = defineStore('canvas', () => {
                 isOfflineMode: isOfflineMode.value,
                 shapes: shapes.value.map(serializeShape),
                 selectedId: selectedId.value,
+                selectedIds: selectedIds.value,
+                selectionRect: selectionRect.value
+                    ? { ...selectionRect.value }
+                    : null,
+                zoom: zoom.value,
+                pan: pan.value,
+                backgroundColor: backgroundColor.value,
             };
             localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
         } catch (e) {
@@ -326,6 +616,10 @@ export const useCanvasStore = defineStore('canvas', () => {
             const data = JSON.parse(saved) as Partial<CanvasStorageData>;
             documentId.value = String(data.documentId ?? '0');
             isOfflineMode.value = Boolean(data.isOfflineMode ?? false);
+            if (data.zoom) zoom.value = data.zoom;
+            if (data.pan) pan.value = data.pan;
+            if (data.backgroundColor)
+                backgroundColor.value = data.backgroundColor;
 
             const restored: Shape[] = (data.shapes ?? []).map(
                 (plain: SerializedShape) => {
@@ -337,18 +631,25 @@ export const useCanvasStore = defineStore('canvas', () => {
             );
 
             shapes.value = restored;
-            selectedId.value = data.selectedId ?? null;
+            if (data.selectedIds && data.selectedIds.length > 0) {
+                selectedIds.value = data.selectedIds;
+                documentId.value = data.documentId
+                    ? String(data.documentId)
+                    : '0';
+            } else {
+                selectedId.value = data.selectedId ?? null;
+                selectedIds.value = selectedId.value ? [selectedId.value] : [];
+            }
+            if (data.selectionRect) {
+                selectionRect.value = { ...data.selectionRect };
+            }
         } catch (e) {
             console.error('Ошибка загрузки:', e);
         }
     }
 
-        async function initDocument() {
+    async function initDocument() {
         const localScene = createSnapshot();
-
-        if (isOfflineMode.value) {
-            return;
-        }
 
         try {
             if (documentId.value !== '0') {
@@ -356,11 +657,14 @@ export const useCanvasStore = defineStore('canvas', () => {
                 if (localScene.shapes.length === 0) {
                     restoreSnapshot({
                         shapes:
-                            (remote.content.shapes as SerializedShape[] | undefined) ??
-                            [],
+                            (remote.content.shapes as
+                                | SerializedShape[]
+                                | undefined) ?? [],
                         selectedId:
-                            (remote.content.selectedId as string | null | undefined) ??
-                            null,
+                            (remote.content.selectedId as
+                                | string
+                                | null
+                                | undefined) ?? null,
                     });
                 } else {
                     await updateCanvas(
@@ -368,11 +672,18 @@ export const useCanvasStore = defineStore('canvas', () => {
                         snapshotToServerContent(localScene)
                     );
                 }
+
+                isOfflineMode.value = false;
                 serverError.value = null;
+
                 return;
             }
 
-            const created = await createCanvas(snapshotToServerContent(localScene));
+            const created = await createCanvas(
+                snapshotToServerContent(localScene)
+            );
+
+            isOfflineMode.value = false;
             documentId.value = created.id;
             serverError.value = null;
         } catch (error) {
@@ -399,16 +710,21 @@ export const useCanvasStore = defineStore('canvas', () => {
             const remote = await getCanvasById(id);
             restoreSnapshot({
                 shapes:
-                    (remote.content.shapes as SerializedShape[] | undefined) ?? [],
+                    (remote.content.shapes as SerializedShape[] | undefined) ??
+                    [],
                 selectedId:
-                    (remote.content.selectedId as string | null | undefined) ?? null,
+                    (remote.content.selectedId as string | null | undefined) ??
+                    null,
             });
             documentId.value = remote.id;
             serverError.value = null;
             return { success: true, message: 'Документ успешно открыт.' };
         } catch (error) {
             if (error instanceof CanvasNotFoundError) {
-                return { success: false, message: 'Документ с таким номером не найден.' };
+                return {
+                    success: false,
+                    message: 'Документ с таким номером не найден.',
+                };
             }
 
             if (error instanceof CanvasApiError) {
@@ -432,7 +748,10 @@ export const useCanvasStore = defineStore('canvas', () => {
         }
 
         try {
-            await updateCanvas(documentId.value, snapshotToServerContent(createSnapshot()));
+            await updateCanvas(
+                documentId.value,
+                snapshotToServerContent(createSnapshot())
+            );
             serverError.value = null;
         } catch (error) {
             isOfflineMode.value = true;
@@ -499,7 +818,7 @@ export const useCanvasStore = defineStore('canvas', () => {
     void initDocument();
 
     watch(
-        [shapes, selectedId, documentId, isOfflineMode],
+        [shapes, selectedId, documentId, isOfflineMode, backgroundColor],
         () => {
             saveToLocalStorage();
             void syncDocument();
@@ -510,29 +829,51 @@ export const useCanvasStore = defineStore('canvas', () => {
     return {
         shapes,
         selectedId,
+        selectedIds,
+        selectedShapes,
+        hasSelection,
+        selectionCount,
+        selectedShape,
+        selectionBox,
+        selectionRect,
+        isSelecting,
+        dragStartPositions,
         MIN_ZOOM,
         MAX_ZOOM,
         ZOOM_STEP,
-        selectedShape,
+        zoom,
+        pan,
+        documentId,
+        isOfflineMode,
+        serverError,
+        backgroundColor,
         addShape,
         updateShape,
         deleteShape,
         selectShape,
+        selectShapeWithAdd,
+        selectShapesInRect,
+        startSelection,
+        updateSelection,
+        endSelection,
+        setDragStartPositions,
+        moveSelectedShapes,
+        deleteSelectedShapes,
+        selectAll,
+        clearSelection,
         moveShape,
+        duplicateSelectedShape,
         undo,
         redo,
         canUndo,
         canRedo,
-        zoom,
         setZoom,
         zoomIn,
         zoomOut,
-        pan,
+        zoomAtCenter,
         setPan,
         movePan,
-        documentId,
-        isOfflineMode,
-        serverError,
+        setBackgroundColor,
         openDocumentById,
         startInteraction,
         endInteraction,
