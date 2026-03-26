@@ -140,13 +140,12 @@
                                         : 'pointer',
                                 }"
                                 :class="{
-                                    disabled: !selectedShape || !isFillDisabled,
+                                    disabled: !selectedShape || isFillDisabled,
                                 }"
                                 @click="
                                     !isFillDisabled && showColorPicker('fill')
                                 "
                             />
-
                             <Teleport to="body">
                                 <div
                                     v-if="activePicker === 'fill'"
@@ -210,7 +209,10 @@
                             <div
                                 class="colorPreview"
                                 :style="{ backgroundColor: strokeColor }"
-                                :class="{ disabled: !selectedShape }"
+                                :class="{
+                                    disabled:
+                                        !selectedShape && !isPencilToolMode,
+                                }"
                                 @click="showColorPicker('stroke')"
                             />
 
@@ -244,7 +246,7 @@
                             max="1"
                             step="0.05"
                             :value="strokeOpacity"
-                            :disabled="!selectedShape"
+                            :disabled="!selectedShape && !isPencilToolMode"
                             @input="onOpacityChange('strokeOpacity', $event)"
                         />
                         <button
@@ -270,9 +272,9 @@
                         type="number"
                         aria-label="Stroke width"
                         :value="strokeWidth"
-                        :disabled="!selectedShape"
-                        min="1"
-                        max="5"
+                        :disabled="!selectedShape && !isPencilToolMode"
+                        min="0"
+                        :max="MAX_STROKE_WIDTH"
                         step="0.5"
                         @blur="onNumberChange('strokeWidth', $event)"
                         @keydown.enter.prevent="
@@ -487,6 +489,7 @@ import { computed, ref, nextTick, onMounted, onUnmounted, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useCanvasStore } from '@/stores/canvas';
 import type { Shape } from '@/canvas/types';
+import { useToolsStore } from '@/stores/tools';
 
 interface ShapeWithName extends Shape {
     name?: string;
@@ -522,7 +525,12 @@ const fillColorInputRef = ref<HTMLInputElement | null>(null);
 const strokeColorInputRef = ref<HTMLInputElement | null>(null);
 
 function showColorPicker(type: 'fill' | 'stroke') {
-    if (!selectedShape.value) return;
+    if (
+        !selectedShape.value &&
+        !(isPencilToolMode.value && type === 'stroke')
+    ) {
+        return;
+    }
 
     const previewElement = event?.currentTarget as HTMLElement;
 
@@ -604,6 +612,10 @@ const { selectedShape, shapes } = storeToRefs(canvasStore);
 const editingLayerId = ref<string | null>(null);
 const inputRefs = ref<Record<string, HTMLInputElement>>({});
 
+const toolsStore = useToolsStore();
+
+const MAX_STROKE_WIDTH = 5;
+
 const setInputRef = (el: HTMLInputElement | null, shapeId: string) => {
     if (el) {
         inputRefs.value[shapeId] = el;
@@ -626,13 +638,32 @@ function getShapeStringProp(key: string, fallback: string) {
     return typeof value === 'string' ? value : fallback;
 }
 
+const isPencilToolMode = computed(() => {
+    return toolsStore.activeTool === 'pencil' && !selectedShape.value;
+});
+
 const shapeWidth = computed(() => getShapeNumberProp('width', ''));
 const shapeHeight = computed(() => getShapeNumberProp('height', ''));
 const fillColor = computed(() => getShapeStringProp('fill', '#000000'));
-const strokeColor = computed(() => getShapeStringProp('stroke', '#000000'));
+const strokeColor = computed(() => {
+    if (isPencilToolMode.value) {
+        return toolsStore.pencilDefaults.stroke;
+    }
+    return getShapeStringProp('stroke', '#000000');
+});
 const fillOpacity = computed(() => getShapeNumberProp('fillOpacity', 1));
-const strokeOpacity = computed(() => getShapeNumberProp('strokeOpacity', 1));
-const strokeWidth = computed(() => getShapeNumberProp('strokeWidth', ''));
+const strokeOpacity = computed(() => {
+    if (isPencilToolMode.value) {
+        return toolsStore.pencilDefaults.strokeOpacity;
+    }
+    return getShapeNumberProp('strokeOpacity', 1);
+});
+const strokeWidth = computed(() => {
+    if (isPencilToolMode.value) {
+        return toolsStore.pencilDefaults.strokeWidth;
+    }
+    return getShapeNumberProp('strokeWidth', '');
+});
 
 const layers = computed(() => [...shapes.value].reverse());
 
@@ -676,7 +707,7 @@ function normalizeNumberByKey(key: NumberFieldKey, value: number) {
         return Math.max(1, value);
     }
     if (key === 'strokeWidth') {
-        return Math.min(5, Math.max(1, value));
+        return Math.min(MAX_STROKE_WIDTH, Math.max(0, value));
     }
     if (key === 'rotation') {
         return ((value % 360) + 360) % 360;
@@ -685,7 +716,6 @@ function normalizeNumberByKey(key: NumberFieldKey, value: number) {
 }
 
 function applyNumberValue(key: NumberFieldKey, target: HTMLInputElement) {
-    if (!selectedShape.value) return;
     const raw = target.value.trim();
     if (raw === '') {
         const currentValue = getCurrentNumberValue(key);
@@ -709,6 +739,13 @@ function applyNumberValue(key: NumberFieldKey, target: HTMLInputElement) {
     if (currentValue !== null && normalized === currentValue) {
         return;
     }
+
+    if (isPencilToolMode.value && key === 'strokeWidth') {
+        toolsStore.setPencilDefaults({ strokeWidth: normalized });
+        return;
+    }
+
+    if (!selectedShape.value) return;
 
     canvasStore.updateShape(selectedShape.value.id, {
         [key]: normalized,
@@ -751,9 +788,24 @@ function commitAfterClick(event: MouseEvent) {
 }
 
 function onWheelChange(key: NumberFieldKey, event: WheelEvent) {
-    if (!selectedShape.value) return;
-
     event.preventDefault();
+
+    if (isPencilToolMode.value && key === 'strokeWidth') {
+        const step = wheelStepConfig[key];
+        const delta = event.deltaY > 0 ? -step : step;
+        const currentValue = toolsStore.pencilDefaults.strokeWidth;
+        const newValue = Math.min(
+            MAX_STROKE_WIDTH,
+            Math.max(0, currentValue + delta)
+        );
+
+        toolsStore.setPencilDefaults({
+            strokeWidth: Math.round(newValue * 100) / 100,
+        });
+        return;
+    }
+
+    if (!selectedShape.value) return;
 
     const step = wheelStepConfig[key];
     const delta = event.deltaY > 0 ? -step : step;
@@ -768,7 +820,7 @@ function onWheelChange(key: NumberFieldKey, event: WheelEvent) {
         newValue = ((newValue % 360) + 360) % 360;
     }
     if (key === 'strokeWidth') {
-        newValue = Math.min(5, Math.max(1, newValue));
+        newValue = Math.min(MAX_STROKE_WIDTH, Math.max(1, newValue));
     }
 
     canvasStore.updateShape(selectedShape.value.id, {
@@ -777,29 +829,92 @@ function onWheelChange(key: NumberFieldKey, event: WheelEvent) {
 }
 
 function onFlip(key: 'scaleX' | 'scaleY') {
-    if (!selectedShape.value) return;
+    const shapesToFlip =
+        canvasStore.selectedIds.length === 1 && selectedShape.value
+            ? [selectedShape.value]
+            : canvasStore.selectedShapes;
 
-    const currentScale = Number((selectedShape.value as Partial<Shape>)[key]);
-    const currentRotation = selectedShape.value.rotation;
+    if (!shapesToFlip || shapesToFlip.length === 0) return;
 
-    const newRotation =
-        key === 'scaleX'
-            ? (360 - currentRotation) % 360
-            : (180 - currentRotation + 360) % 360;
+    let flipCenterX = 0;
+    let flipCenterY = 0;
 
-    canvasStore.updateShape(selectedShape.value.id, {
-        [key]: currentScale * -1,
-        rotation:
-            selectedShape.value.type === 'line' ? currentRotation : newRotation,
+    if (canvasStore.selectionRect) {
+        flipCenterX =
+            (canvasStore.selectionRect.start.x +
+                canvasStore.selectionRect.end.x) /
+            2;
+        flipCenterY =
+            (canvasStore.selectionRect.start.y +
+                canvasStore.selectionRect.end.y) /
+            2;
+    } else {
+        const targetShape = shapesToFlip[0];
+        if (!targetShape) return;
+
+        const box = targetShape.getBoundingBox();
+        flipCenterX = (box.minX + box.maxX) / 2;
+        flipCenterY = (box.minY + box.maxY) / 2;
+    }
+
+    shapesToFlip.forEach((shape) => {
+        const currentScaleX = shape.scaleX;
+        const currentScaleY = shape.scaleY;
+        const currentRotation = shape.rotation;
+        const isLine = shape.type === 'line';
+
+        let newScaleX = currentScaleX;
+        let newScaleY = currentScaleY;
+        let newRotation = currentRotation;
+
+        if (key === 'scaleX') {
+            if (isLine) {
+                newScaleX = currentScaleX * -1;
+            } else {
+                newScaleX = currentScaleX * -1;
+                newRotation = (360 - currentRotation) % 360;
+            }
+        } else {
+            if (isLine) {
+                newScaleY = currentScaleY * -1;
+            } else {
+                newScaleX = currentScaleX * -1;
+                newRotation = (180 - currentRotation + 360) % 360;
+            }
+        }
+
+        const newPosX =
+            key === 'scaleX'
+                ? flipCenterX - (shape.position.x - flipCenterX)
+                : shape.position.x;
+
+        const newPosY =
+            key === 'scaleY'
+                ? flipCenterY - (shape.position.y - flipCenterY)
+                : shape.position.y;
+
+        canvasStore.updateShape(shape.id, {
+            scaleX: newScaleX,
+            scaleY: newScaleY,
+            rotation: newRotation,
+            position: { x: newPosX, y: newPosY },
+        });
     });
 }
 
 type ColorFieldKey = 'fill' | 'stroke';
 
 function onColorChange(key: ColorFieldKey, event: Event) {
-    if (!selectedShape.value) return;
+    // if (!selectedShape.value) return;
     const target = event.target as HTMLInputElement;
     const value = target.value;
+
+    if (isPencilToolMode.value && key === 'stroke') {
+        toolsStore.setPencilDefaults({ stroke: value });
+        return;
+    }
+
+    if (!selectedShape.value) return;
 
     canvasStore.updateShape(selectedShape.value.id, {
         [key]: value,
@@ -817,10 +932,17 @@ function normalizeOpacity(value: number) {
 }
 
 function onOpacityChange(key: OpacityFieldKey, event: Event) {
-    if (!selectedShape.value) return;
+    // if (!selectedShape.value) return;
     const target = event.target as HTMLInputElement;
     const value = normalizeOpacity(Number(target.value));
     if (Number.isNaN(value)) return;
+
+    if (isPencilToolMode.value && key === 'strokeOpacity') {
+        toolsStore.setPencilDefaults({ strokeOpacity: value });
+        return;
+    }
+
+    if (!selectedShape.value) return;
 
     canvasStore.updateShape(selectedShape.value.id, {
         [key]: value,
@@ -923,22 +1045,24 @@ function isNoColorActive(key: OpacityFieldKey) {
 }
 
 function setNoColor(key: OpacityFieldKey) {
-    if (!selectedShape.value) return;
     const currentOpacity =
         key === 'fillOpacity' ? fillOpacity.value : strokeOpacity.value;
     const isCurrentlyNoColor =
         typeof currentOpacity === 'number' &&
         normalizeOpacity(currentOpacity) === 0;
 
-    if (isCurrentlyNoColor) {
-        canvasStore.updateShape(selectedShape.value.id, {
-            [key]: 1,
-        } as Partial<Shape>);
-    } else {
-        canvasStore.updateShape(selectedShape.value.id, {
-            [key]: 0,
-        } as Partial<Shape>);
+    const nextValue = isCurrentlyNoColor ? 1 : 0;
+
+    if (isPencilToolMode.value && key === 'strokeOpacity') {
+        toolsStore.setPencilDefaults({ strokeOpacity: nextValue });
+        return;
     }
+
+    if (!selectedShape.value) return;
+
+    canvasStore.updateShape(selectedShape.value.id, {
+        [key]: nextValue,
+    } as Partial<Shape>);
 }
 
 function shapeLabel(type: string) {

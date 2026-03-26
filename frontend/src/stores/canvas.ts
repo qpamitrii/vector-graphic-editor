@@ -48,8 +48,8 @@ type CanvasStorageData = {
     selectedId: string | null;
     selectedIds?: string[];
     selectionRect?: { start: Point; end: Point } | null;
-    zoom?: number;
-    pan?: { x: number; y: number };
+    zoom: number;
+    pan: { x: number; y: number };
     backgroundColor?: string;
 };
 
@@ -85,6 +85,7 @@ export const useCanvasStore = defineStore('canvas', () => {
     const isOfflineMode = ref(false);
     const serverError = ref<string | null>(null);
     const backgroundColor = ref<string>('#ffffff');
+    const clipboardShape = ref<SerializedShape | null>(null);
 
     let isContinuousChangeActive = false;
     let continuousChangeTimer: number | null = null;
@@ -102,6 +103,77 @@ export const useCanvasStore = defineStore('canvas', () => {
         () => shapes.value.find((s) => s.id === selectedId.value) ?? null
     );
 
+    function copySelectedShape() {
+        if (!selectedShape.value) return;
+        clipboardShape.value = serializeShape(selectedShape.value);
+    }
+
+    function pasteShape() {
+        if (!clipboardShape.value) return;
+
+        pushHistory();
+
+        const plain = clipboardShape.value;
+        const { type, id: _oldId, position, ...rest } = plain;
+
+        const newId = generateId();
+        const newPosition = {
+            x: position.x + 20,
+            y: position.y + 20,
+        };
+
+        const newShape = shapeRegistry.create(type, newId, newPosition);
+        Object.assign(newShape, rest);
+
+        newShape.id = newId;
+        newShape.position = newPosition;
+
+        if ('name' in newShape) {
+            const sourceName =
+                typeof (plain as Record<string, unknown>).name === 'string'
+                    ? String((plain as Record<string, unknown>).name)
+                    : type;
+
+            (newShape as Shape).name = `${sourceName} копия`;
+        }
+
+        shapes.value.push(newShape as Shape);
+        selectedId.value = newId;
+
+        clipboardShape.value = serializeShape(newShape as Shape);
+    }
+    function duplicateSelectedShape() {
+        if (!selectedShape.value) return;
+
+        pushHistory();
+
+        const plain = serializeShape(selectedShape.value);
+        const { type, id: _oldId, position, ...rest } = plain;
+
+        const newId = generateId();
+        const newPosition = {
+            x: position.x + 20,
+            y: position.y + 20,
+        };
+
+        const newShape = shapeRegistry.create(type, newId, newPosition);
+        Object.assign(newShape, rest);
+
+        newShape.id = newId;
+        newShape.position = newPosition;
+
+        if ('name' in newShape) {
+            const baseName =
+                typeof (plain as Record<string, unknown>).name === 'string'
+                    ? String((plain as Record<string, unknown>).name)
+                    : type;
+
+            (newShape as Shape).name = `${baseName} копия`;
+        }
+
+        shapes.value.push(newShape as Shape);
+        selectedId.value = newId;
+    }
     function serializeShape(shape: Shape): SerializedShape {
         const plain = JSON.parse(JSON.stringify(shape)) as SerializedShape;
         plain.type = (shape as unknown as { type: string }).type;
@@ -490,41 +562,6 @@ export const useCanvasStore = defineStore('canvas', () => {
         scheduleDocumentSync();
     }
 
-    function duplicateSelectedShape() {
-        const source = selectedShape.value;
-        if (!source) return;
-
-        pushHistory();
-
-        const plain = serializeShape(source);
-        const { type, id: _oldId, position, ...rest } = plain;
-
-        const newId = generateId();
-
-        const duplicate = shapeRegistry.create(type, newId, {
-            x: position.x + 5,
-            y: position.y + 5,
-        });
-
-        Object.assign(duplicate, rest);
-
-        duplicate.id = newId;
-        duplicate.position = {
-            x: duplicate.position.x + 5,
-            y: duplicate.position.y + 5,
-        };
-
-        const sourceName = (source as Shape & { name?: string }).name;
-        if (sourceName && sourceName.trim()) {
-            (duplicate as Shape & { name?: string }).name =
-                `${sourceName} копия`;
-        }
-
-        shapes.value.push(duplicate as Shape);
-        selectedId.value = newId;
-        scheduleDocumentSync();
-    }
-
     function setZoom(value: number) {
         const newZoom = Math.max(
             MIN_ZOOM,
@@ -577,7 +614,6 @@ export const useCanvasStore = defineStore('canvas', () => {
 
         const newPanX = -worldCenterX * newZoomFactor;
         const newPanY = -worldCenterY * newZoomFactor;
-
         zoom.value = newZoom;
         pan.value = { x: newPanX, y: newPanY };
     }
@@ -612,7 +648,7 @@ export const useCanvasStore = defineStore('canvas', () => {
                     ? { ...selectionRect.value }
                     : null,
                 zoom: zoom.value,
-                pan: pan.value,
+                pan: { ...pan.value },
                 backgroundColor: backgroundColor.value,
             };
             localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
@@ -629,10 +665,25 @@ export const useCanvasStore = defineStore('canvas', () => {
             const data = JSON.parse(saved) as Partial<CanvasStorageData>;
             documentId.value = String(data.documentId ?? '0');
             isOfflineMode.value = Boolean(data.isOfflineMode ?? false);
-            if (data.zoom) zoom.value = data.zoom;
-            if (data.pan) pan.value = data.pan;
-            if (data.backgroundColor)
+            zoom.value = Math.max(
+                MIN_ZOOM,
+                Math.min(MAX_ZOOM, Number(data.zoom ?? 100))
+            );
+
+            const savedPan = data.pan;
+            pan.value = {
+                x: Number(savedPan?.x ?? 0),
+                y: Number(savedPan?.y ?? 0),
+            };
+
+            if (data.backgroundColor) {
                 backgroundColor.value = data.backgroundColor;
+            } else {
+                const savedBgColor = localStorage.getItem('canvas-bg-color');
+                if (savedBgColor) {
+                    backgroundColor.value = savedBgColor;
+                }
+            }
 
             const restored: Shape[] = (data.shapes ?? []).map(
                 (plain: SerializedShape) => {
@@ -844,7 +895,15 @@ export const useCanvasStore = defineStore('canvas', () => {
     void initDocument();
 
     watch(
-        [shapes, selectedId, documentId, isOfflineMode, backgroundColor],
+        [
+            shapes,
+            selectedId,
+            documentId,
+            isOfflineMode,
+            zoom,
+            pan,
+            backgroundColor,
+        ],
         () => {
             saveToLocalStorage();
             scheduleDocumentSync();
@@ -889,6 +948,8 @@ export const useCanvasStore = defineStore('canvas', () => {
         clearSelection,
         moveShape,
         duplicateSelectedShape,
+        copySelectedShape,
+        pasteShape,
         undo,
         redo,
         canUndo,
